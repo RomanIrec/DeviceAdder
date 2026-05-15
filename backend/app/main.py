@@ -9,6 +9,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from datetime import datetime
+from typing import Optional
+
 load_dotenv()
 
 DATABASE_URL = os.getenv(
@@ -207,3 +210,135 @@ def register_device(device: DeviceCreate):
             status_code=500,
             detail=f"Database error: {str(e)}",
         )
+    
+@app.get("/devices/{device_id}/metrics")
+def get_device_metrics(device_id: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pipeline FROM device_registry WHERE device_id = %s",
+                (device_id,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Device not found")
+
+            pipeline = row[0]
+
+            if pipeline == "generic_iot":
+                cur.execute(
+                    """
+                    SELECT DISTINCT m.metric_name
+                    FROM iot_measurements m
+                    JOIN iot_devices d ON d.id_device = m.id_device
+                    WHERE d.device_id = %s
+                    ORDER BY m.metric_name
+                    """,
+                    (device_id,),
+                )
+
+            else:
+                cur.execute(
+                    """
+                    SELECT DISTINCT m.metric_name
+                    FROM monitoring m
+                    JOIN samples s ON s.id_sample = m.id_sample
+                    WHERE s.sample_name = %s
+                    ORDER BY m.metric_name
+                    """,
+                    (device_id,),
+                )
+
+            return [r[0] for r in cur.fetchall()]
+
+
+@app.get("/devices/{device_id}/measurements")
+def get_device_measurements(
+    device_id: str,
+    metric_name: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = 500,
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pipeline FROM device_registry WHERE device_id = %s",
+                (device_id,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Device not found")
+
+            pipeline = row[0]
+
+            params = [device_id]
+            filters = []
+
+            if metric_name:
+                filters.append("m.metric_name = %s")
+                params.append(metric_name)
+
+            if start_date:
+                filters.append("m.measurement_date >= %s")
+                params.append(start_date)
+
+            if end_date:
+                filters.append("m.measurement_date <= %s")
+                params.append(end_date)
+
+            where_extra = ""
+            if filters:
+                where_extra = " AND " + " AND ".join(filters)
+
+            params.append(limit)
+
+            if pipeline == "generic_iot":
+                query = f"""
+                    SELECT
+                        d.device_id,
+                        m.topic,
+                        m.metric_name,
+                        m.metric_value,
+                        m.metric_unit,
+                        m.measurement_date
+                    FROM iot_measurements m
+                    JOIN iot_devices d ON d.id_device = m.id_device
+                    WHERE d.device_id = %s
+                    {where_extra}
+                    ORDER BY m.measurement_date DESC
+                    LIMIT %s
+                """
+            else:
+                query = f"""
+                    SELECT
+                        s.sample_name AS device_id,
+                        NULL AS topic,
+                        m.metric_name,
+                        m.metric_value,
+                        m.metric_unit,
+                        m.measurement_date
+                    FROM monitoring m
+                    JOIN samples s ON s.id_sample = m.id_sample
+                    WHERE s.sample_name = %s
+                    {where_extra}
+                    ORDER BY m.measurement_date DESC
+                    LIMIT %s
+                """
+
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+    return [
+        {
+            "device_id": row[0],
+            "topic": row[1],
+            "metric_name": row[2],
+            "metric_value": row[3],
+            "metric_unit": row[4],
+            "measurement_date": row[5],
+        }
+        for row in rows
+    ]
