@@ -18,6 +18,36 @@ const filteredDevices = computed(() => {
   )
 })
 
+const pivotedRows = computed(() => {
+  const grouped = {}
+
+  for (const row of rows.value) {
+    const key = `${row.measurement_date}_${row.device_id}`
+
+    if (!grouped[key]) {
+      grouped[key] = {
+        measurement_date: row.measurement_date,
+        device_id: row.device_id,
+      }
+    }
+
+    const columnName = `${row.metric_name} [${row.metric_unit || ''}]`
+    grouped[key][columnName] = row.metric_value
+  }
+
+  return Object.values(grouped)
+})
+
+const pivotColumns = computed(() => {
+  const columns = new Set()
+
+  for (const row of rows.value) {
+    columns.add(`${row.metric_name} [${row.metric_unit || ''}]`)
+  }
+
+  return Array.from(columns)
+})
+
 async function loadDevices() {
   devices.value = await $fetch(`${config.public.apiBase}/devices`)
 }
@@ -125,28 +155,37 @@ onMounted(loadDevices)
       Loading...
     </div>
 
-    <table v-if="rows.length" class="data-table">
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Device</th>
-          <th>Metric</th>
-          <th>Value</th>
-          <th>Unit</th>
-          <th>Topic</th>
-        </tr>
-      </thead>
+    <table v-if="pivotedRows.length" class="data-table">
+        <thead>
+            <tr>
+            <th>Date</th>
+            <th>Device</th>
 
-      <tbody>
-        <tr v-for="row in rows" :key="row.measurement_date + row.metric_name">
-          <td>{{ row.measurement_date }}</td>
-          <td>{{ row.device_id }}</td>
-          <td>{{ row.metric_name }}</td>
-          <td>{{ row.metric_value }}</td>
-          <td>{{ row.metric_unit }}</td>
-          <td>{{ row.topic || '-' }}</td>
-        </tr>
-      </tbody>
+            <th
+                v-for="column in pivotColumns"
+                :key="column"
+            >
+                {{ column }}
+            </th>
+            </tr>
+        </thead>
+
+        <tbody>
+            <tr
+            v-for="row in pivotedRows"
+            :key="row.measurement_date + row.device_id"
+            >
+            <td>{{ row.measurement_date }}</td>
+            <td>{{ row.device_id }}</td>
+
+            <td
+                v-for="column in pivotColumns"
+                :key="column"
+            >
+                {{ row[column] ?? '-' }}
+            </td>
+            </tr>
+        </tbody>
     </table>
   </div>
 </template>
