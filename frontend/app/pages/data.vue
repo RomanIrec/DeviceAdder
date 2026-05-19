@@ -48,6 +48,71 @@ const pivotColumns = computed(() => {
   return Array.from(columns)
 })
 
+const showGrafanaModal = ref(false)
+
+function escapeCsv(value) {
+  if (value === null || value === undefined) return ''
+  const text = String(value)
+  return `"${text.replaceAll('"', '""')}"`
+}
+
+function downloadCsv() {
+  if (!pivotedRows.value.length) return
+
+  const headers = ['Date', 'Device', ...pivotColumns.value]
+
+  const csvRows = [
+    headers.map(escapeCsv).join(','),
+    ...pivotedRows.value.map(row => {
+      return [
+        row.measurement_date,
+        row.device_id,
+        ...pivotColumns.value.map(column => row[column] ?? '')
+      ].map(escapeCsv).join(',')
+    })
+  ]
+
+  const blob = new Blob([csvRows.join('\n')], {
+    type: 'text/csv;charset=utf-8;'
+  })
+
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+
+  link.href = url
+  link.download = `${selectedDevice.value || 'device'}_measurements.csv`
+  link.click()
+
+  URL.revokeObjectURL(url)
+}
+
+const grafanaQueries = computed(() => {
+  if (!selectedDevice.value) return []
+
+  const selectedMetrics =
+    selectedMetric.value
+      ? [selectedMetric.value]
+      : metrics.value
+
+  return selectedMetrics.map(metric => {
+    return `SELECT
+  m.measurement_date AS time,
+  m.metric_value AS "${metric}"
+FROM iot_measurements m
+JOIN iot_devices d
+  ON d.id_device = m.id_device
+WHERE
+  $__timeFilter(m.measurement_date)
+  AND d.device_id = '${selectedDevice.value}'
+  AND m.metric_name = '${metric}'
+ORDER BY time;`
+  })
+})
+
+async function copyGrafanaQueries() {
+  await navigator.clipboard.writeText(grafanaQueries.value.join('\n\n'))
+}
+
 async function loadDevices() {
   devices.value = await $fetch(`${config.public.apiBase}/devices`)
 }
@@ -145,6 +210,26 @@ onMounted(loadDevices)
       <button class="submit-btn" @click="loadMeasurements">
         Load data
       </button>
+
+      <button
+        class="add-btn"
+        type="button"
+        @click="downloadCsv"
+        :disabled="!pivotedRows.length"
+      >
+        Download CSV
+      </button>
+
+      <button
+        class="add-btn"
+        type="button"
+        @click="showGrafanaModal = true"
+        :disabled="!selectedDevice"
+      >
+        Grafana query help
+      </button>
+
+
     </div>
 
     <div v-if="errorMessage" class="error">
@@ -187,6 +272,39 @@ onMounted(loadDevices)
             </tr>
         </tbody>
     </table>
+
+    <div
+      v-if="showGrafanaModal"
+      class="modal-backdrop"
+    >
+      <div class="modal">
+        <h2>Grafana SQL queries</h2>
+
+        <p class="subtitle">
+          Paste these queries into a Grafana PostgreSQL panel.
+        </p>
+
+        <pre>{{ grafanaQueries.join('\n\n') }}</pre>
+
+        <div class="modal-actions">
+          <button
+            class="submit-btn"
+            type="button"
+            @click="copyGrafanaQueries"
+          >
+            Copy queries
+          </button>
+
+          <button
+            class="add-btn"
+            type="button"
+            @click="showGrafanaModal = false"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
